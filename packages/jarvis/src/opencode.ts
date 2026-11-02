@@ -312,6 +312,7 @@ export async function resolveOpencodeBin(explicit?: string) {
   }
   const bundled = [
     path.join(path.dirname(process.execPath), "opencode"),
+    ...(process.env.JARVIS_DATA ? [path.join(process.env.JARVIS_DATA, "bin", "opencode")] : []),
     path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share"), "jarvis", "bin", "opencode"),
   ]
   for (const p of bundled) {

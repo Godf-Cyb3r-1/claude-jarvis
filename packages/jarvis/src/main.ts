@@ -19,7 +19,7 @@ Usage: jarvis [options]
   --max-sessions <n>           most workers at once (default 4)
   --data <path>                where Jarvis keeps memory (default ~/.local/share/jarvis)
   -h, --help
-Env: JARVIS_OPENCODE_BIN, JARVIS_BRAIN_MODEL, JARVIS_BRAIN_FALLBACKS (comma separated)`
+Env: JARVIS_OPENCODE_BIN, JARVIS_BRAIN_MODEL, JARVIS_BRAIN_FALLBACKS (comma separated), JARVIS_DATA`
 
 function arg(name: string) {
   const i = process.argv.indexOf(name)
@@ -30,7 +30,7 @@ if (process.argv.includes("-h") || process.argv.includes("--help")) { console.lo
 
 const directory = path.resolve(arg("--dir") ?? process.cwd())
 const port = Number(arg("--port") ?? 4747)
-const dataDir = path.resolve(arg("--data") ?? path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share"), "jarvis"))
+const dataDir = path.resolve(arg("--data") ?? process.env.JARVIS_DATA ?? path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share"), "jarvis"))
 await mkdir(dataDir, { recursive: true })
 
 let oc
