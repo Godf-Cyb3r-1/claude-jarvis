@@ -42,7 +42,8 @@ jobs:
             mkdir -p "/tmp/$arch"
             tar -xzf "/tmp/$arch.tgz" -C "/tmp/$arch"
             install -m 0755 "/tmp/$arch/opencode" "out/opencode-linux-$arch"
-            "out/opencode-linux-$arch" --version
+            # arm64 cannot run on this x64 runner; verify the two x64 builds only.
+            case "$arch" in x64*) "out/opencode-linux-$arch" --version ;; esac
           done
 
       - name: Smoke test the server API
