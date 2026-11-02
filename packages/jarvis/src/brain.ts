@@ -1,5 +1,5 @@
 import { PERSONA } from "./persona"
-import type { OpencodeClient, ModelRef } from "./opencode"
+import { OpencodeHttpError, type OpencodeClient, type ModelRef } from "./opencode"
 import type { Card } from "./ledger"
 import { sanitizeTags, stripTagsInCode } from "./tags"
 
@@ -21,7 +21,13 @@ const DEFAULT_BRAIN = "opencode/deepseek-v4.1-flash-free"
  * reported in `info()` and logged: the user can see whether thinking really is off.
  */
 export async function resolveBrain(client: OpencodeClient, wanted = process.env.JARVIS_BRAIN_MODEL ?? DEFAULT_BRAIN, fallbacks: string[] = (process.env.JARVIS_BRAIN_FALLBACKS ?? "").split(",").filter(Boolean)): Promise<BrainLLM> {
-  const list = await client.models().catch(() => [])
+  // A fresh opencode profile fetches models.dev in the background; give it a moment instead of
+  // permanently falling back to "no model" on the first start.
+  let list = await client.models().catch(() => [])
+  for (let i = 0; i < 15 && !list.length; i++) {
+    await new Promise((r) => setTimeout(r, 1000))
+    list = await client.models().catch(() => [])
+  }
   const find = (ref: string) => {
     const [providerID, ...rest] = ref.split("/")
     const id = rest.join("/")
@@ -29,17 +35,39 @@ export async function resolveBrain(client: OpencodeClient, wanted = process.env.
       list.find((m) => m.providerID === providerID && m.id.toLowerCase().includes(id.toLowerCase().replace(/-free$/, "")) && /free/i.test(m.id) === /free/i.test(id))
   }
   const chain = [wanted, ...fallbacks]
-  let model = chain.map(find).find(Boolean)
+  type Model = Awaited<ReturnType<OpencodeClient["models"]>>[number]
+  const picks: Model[] = []
+  for (const refText of chain) {
+    const m = find(refText)
+    if (m && !picks.some((p) => p.providerID === m.providerID && p.id === m.id)) picks.push(m)
+  }
   let note: string | undefined
+  const variantOf = (m: Model) => OFF.map((re) => m.variants?.find((v) => re.test(v.id))).find(Boolean)?.id
+  const refFor = (m: Model): ModelRef => ({ providerID: m.providerID, id: m.id, ...(variantOf(m) ? { variant: variantOf(m)! } : {}) })
+  const model = picks[0]
+  const variant = model ? variantOf(model) : undefined
+  const ref: ModelRef | undefined = model ? refFor(model) : undefined
   if (!model) {
     note = `Model ${wanted} was not found in opencode's model list; using opencode's default model.`
   }
-  const variant = model ? OFF.map((re) => model!.variants?.find((v) => re.test(v.id))).find(Boolean)?.id : undefined
-  const ref: ModelRef | undefined = model ? { providerID: model.providerID, id: model.id, ...(variant ? { variant } : {}) } : undefined
   const thinkingOff = !!variant || (!!model && (model.variants?.length ?? 0) === 0)
   if (model && !variant && model.variants?.length) note = `No variant that turns thinking off was found for ${model.providerID}/${model.id} (variants: ${model.variants.map((v) => v.id).join(", ")}). The prompt asks for direct answers instead.`
+  // Fall back through the other free models when one is rate limited or unavailable.
+  const refs = picks.map(refFor)
   return {
-    generate: (prompt) => client.generate(prompt, ref),
+    generate: async (prompt) => {
+      let last: unknown
+      for (const r of refs.length ? refs : [undefined]) {
+        try {
+          return await client.generate(prompt, r)
+        } catch (e) {
+          last = e
+          // The server itself is wrong (no generate route); another model cannot fix that.
+          if (e instanceof OpencodeHttpError && e.status === 404) throw e
+        }
+      }
+      throw last
+    },
     info: () => ({ model: ref ? `${ref.providerID}/${ref.id}` : "(opencode default)", variant, thinkingOff, note }),
   }
 }

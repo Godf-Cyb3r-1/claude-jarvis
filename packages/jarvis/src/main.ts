@@ -41,6 +41,17 @@ try {
   process.exit(1)
 }
 
+// Fail here, with a useful message, instead of letting every chat turn report "my thinking model isn't answering".
+const ocInfo = await oc.client.info().catch((e) => {
+  console.error(
+    `Jarvis could not talk to the opencode server at ${oc.url}.\n  ${e instanceof Error ? e.message : e}\n\n` +
+      `Jarvis needs opencode 2.x or 1.18.x. Set JARVIS_OPENCODE_BIN to a supported binary, or reinstall with:\n` +
+      `  curl -fsSL https://raw.githubusercontent.com/Godf-Cyb3r-1/claude-jarvis/main/install-jarvis.sh | bash`,
+  )
+  oc.stop()
+  process.exit(1)
+})
+
 const brain = await resolveBrain(oc.client, arg("--brain"))
 const info = brain.info()
 const ledger = new Ledger(path.join(dataDir, "jarvis.db"))
@@ -52,6 +63,7 @@ const server = startServer(jarvis, ledger, { port })
 
 console.log(`Jarvis is up: http://127.0.0.1:${server.port}`)
 console.log(`  workers run in: ${directory}`)
+console.log(`  opencode: ${ocInfo?.version ? "v" + ocInfo.version : "unknown version"} (${oc.url})`)
 console.log(`  brain: ${info.model}${info.variant ? " #" + info.variant : ""}  thinking ${info.thinkingOff ? "off" : "NOT confirmed off"}`)
 if (info.note) console.log(`  note: ${info.note}`)
 

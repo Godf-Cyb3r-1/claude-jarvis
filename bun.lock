@@ -453,6 +453,10 @@
         "@typescript/native": "catalog:",
       },
     },
+    "packages/jarvis": {
+      "name": "@opencode/jarvis",
+      "version": "0.1.0",
+    },
     "packages/latex": {
       "name": "@opencode/latex",
       "version": "2.2.5",
@@ -1921,6 +1925,8 @@
     "@opencode/http-recorder": ["@opencode/http-recorder@workspace:packages/http-recorder"],
 
     "@opencode/httpapi-codegen": ["@opencode/httpapi-codegen@workspace:packages/httpapi-codegen"],
+
+    "@opencode/jarvis": ["@opencode/jarvis@workspace:packages/jarvis"],
 
     "@opencode/latex": ["@opencode/latex@workspace:packages/latex"],
 

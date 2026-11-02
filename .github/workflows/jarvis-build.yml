@@ -5,6 +5,11 @@ on:
     branches: [main]
     paths: ["packages/jarvis/**", ".github/workflows/jarvis-build.yml"]
   workflow_dispatch:
+    inputs:
+      opencode_version:
+        description: "opencode version to ship as the pinned server (default: repo variable or 1.18.33, whose free models are not metered)"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -14,6 +19,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Ship the opencode server Jarvis talks to, pinned to a version whose free models are usable.
+  # This tree only builds opencode 2.x, so for 1.18.x we republish the official release build
+  # (including the no-AVX2 "baseline" variant) rather than pretending to build 1.18 source here.
+  opencode:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    env:
+      OPENCODE_VERSION: ${{ inputs.opencode_version || vars.OPENCODE_VERSION || '1.18.33' }}
+    steps:
+      - name: Pin version
+        id: version
+        run: echo "value=$OPENCODE_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch opencode ${{ env.OPENCODE_VERSION }}
+        run: |
+          mkdir -p out
+          base="https://github.com/sst/opencode/releases/download/v$OPENCODE_VERSION"
+          for arch in x64 x64-baseline arm64; do
+            curl -fL "$base/opencode-linux-$arch.tar.gz" -o "/tmp/$arch.tgz"
+            mkdir -p "/tmp/$arch"
+            tar -xzf "/tmp/$arch.tgz" -C "/tmp/$arch"
+            install -m 0755 "/tmp/$arch/opencode" "out/opencode-linux-$arch"
+            "out/opencode-linux-$arch" --version
+          done
+
+      - name: Smoke test the server API
+        run: |
+          XDG_DATA_HOME=/tmp/oc-data OPENCODE_PASSWORD=pw OPENCODE_SERVER_PASSWORD=pw ./out/opencode-linux-x64 serve --hostname 127.0.0.1 --port 4998 &
+          OC=$!
+          ok=""
+          for i in $(seq 1 30); do
+            if curl -fsS -u opencode:pw http://127.0.0.1:4998/api/health >/tmp/health.json; then ok=1; break; fi
+            sleep 1
+          done
+          test -n "$ok"
+          cat /tmp/health.json
+          curl -fsS -u opencode:pw http://127.0.0.1:4998/api/model | grep -q '"data"'
+          kill $OC
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencode-linux
+          path: out/opencode-linux-*
+          if-no-files-found: error
+
   linux:
     runs-on: ubuntu-22.04
     steps:
@@ -47,8 +98,9 @@ jobs:
           cat > /tmp/stub.ts <<'TS'
           Bun.serve({ port: 4999, fetch(req) {
             const u = new URL(req.url)
+            if (u.pathname === "/api/info") return Response.json({ version: "stub" })
             if (u.pathname === "/api/agent") return Response.json({ data: [] })
-            if (u.pathname === "/api/model") return Response.json({ data: [] })
+            if (u.pathname === "/api/model") return Response.json({ data: [{ id: "stub-free", providerID: "opencode", name: "stub", variants: [] }] })
             if (u.pathname === "/api/event") return new Response(new ReadableStream({ start() {} }), { headers: { "content-type": "text/event-stream" } })
             return new Response(null, { status: 204 })
           } })
@@ -61,25 +113,40 @@ jobs:
           curl -fsS http://127.0.0.1:4747/api/state | grep -q '"workers"'
           kill $JV $STUB
 
-      - name: Checksums
-        working-directory: packages/jarvis/dist
-        run: sha256sum jarvis-linux-* | tee SHA256SUMS
+      - name: Collect artifacts
+        run: |
+          mkdir -p out
+          cp packages/jarvis/dist/jarvis-linux-* out/
+          cp install-jarvis.sh out/
+          chmod +x out/jarvis-* out/install-jarvis.sh
 
       - uses: actions/upload-artifact@v4
         with:
           name: jarvis-linux
-          path: |
-            packages/jarvis/dist/jarvis-linux-*
-            packages/jarvis/dist/SHA256SUMS
-            install-jarvis.sh
+          path: out/*
           if-no-files-found: error
 
+  release:
+    if: github.ref == 'refs/heads/main'
+    needs: [linux, opencode]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: "*"
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum jarvis-linux-* opencode-linux-* install-jarvis.sh | tee SHA256SUMS
+
       - name: Publish release (stable download URL)
-        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release delete jarvis-latest --yes --cleanup-tag || true
           gh release create jarvis-latest --title "Jarvis (latest build)" \
-            --notes "Linux executables built from commit ${GITHUB_SHA}. Install: curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install-jarvis.sh | bash" \
-            packages/jarvis/dist/jarvis-linux-* packages/jarvis/dist/SHA256SUMS install-jarvis.sh
+            --notes "Linux executables built from commit ${GITHUB_SHA}. The release also pins opencode ${{ needs.opencode.outputs.version }} as the server Jarvis talks to (1.18.x for unmetered free models; set OPENCODE_VERSION=2.2.5 to use a 2.x server instead). Install: curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install-jarvis.sh | bash" \
+            dist/jarvis-linux-* dist/opencode-linux-* dist/SHA256SUMS dist/install-jarvis.sh

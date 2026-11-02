@@ -99,4 +99,56 @@ describe("brain", () => {
     const b = await resolveBrain(fake, "p/m")
     expect(b.info().thinkingOff).toBe(false); expect(b.info().note).toContain("variants")
   })
+  test("generate falls back to the legacy opencode route and remembers it", async () => {
+    const seen: string[] = []
+    const fake = new OpencodeClient("http://x", undefined, (async (url: string) => {
+      const path = new URL(url).pathname
+      seen.push(path)
+      if (path === "/api/experimental/generate/text") return new Response("no such route", { status: 404 })
+      return new Response(JSON.stringify({ data: { text: "hello" } }))
+    }) as any)
+    expect(await fake.generate("hi")).toBe("hello")
+    expect(await fake.generate("again")).toBe("hello")
+    expect(seen).toEqual([
+      "/api/info",
+      "/api/experimental/generate/text",
+      "/api/experimental/generate",
+      "/api/experimental/generate",
+    ])
+  })
+  test("opencode 1.18 generate runs one turn in a throwaway session", async () => {
+    const calls: string[] = []
+    const fake = new OpencodeClient("http://x", undefined, (async (url: string, init: any) => {
+      const path = new URL(url).pathname
+      calls.push(`${init.method} ${path}`)
+      if (path === "/api/info") return new Response("<html>ui</html>", { status: 200 })
+      if (path === "/api/health") return Response.json({ healthy: true })
+      if (path === "/session" && init.method === "POST") return Response.json({ id: "ses_1" })
+      if (path === "/session/ses_1/message") return Response.json({ parts: [{ type: "step-start" }, { type: "text", text: "Hi" }] })
+      return new Response(null, { status: 204 })
+    }) as any)
+    expect(await fake.generate("say hi", { providerID: "opencode", id: "deepseek-v4.1-flash-free" })).toBe("Hi")
+    expect(calls).toEqual(["GET /api/info", "GET /api/health", "POST /session", "POST /session/ses_1/message", "DELETE /session/ses_1"])
+  })
+  test("generate explains a server with no generate route", async () => {
+    const fake = new OpencodeClient("http://x", undefined, (async () => new Response("not found", { status: 404 })) as any)
+    await expect(fake.generate("hi")).rejects.toThrow("needs opencode 2.x")
+  })
+  test("brain falls back to the next free model when one is rate limited", async () => {
+    const calls: string[] = []
+    const fake = new OpencodeClient("http://x", undefined, (async (url: string, init: any) => {
+      const path = new URL(url).pathname
+      if (path === "/api/model") return Response.json({ data: [
+        { id: "one-free", providerID: "opencode", name: "1", variants: [] },
+        { id: "two-free", providerID: "opencode", name: "2", variants: [] },
+      ] })
+      const model = JSON.parse(init.body).model
+      calls.push(model.id)
+      if (model.id === "one-free") return new Response("free usage limit reached", { status: 503 })
+      return Response.json({ data: { text: "ok" } })
+    }) as any)
+    const b = await resolveBrain(fake, "opencode/one-free", ["opencode/two-free"])
+    expect(await b.generate("x")).toBe("ok")
+    expect(calls).toEqual(["one-free", "two-free"])
+  })
 })
