@@ -1,0 +1,85 @@
+name: build-jarvis
+
+on:
+  push:
+    branches: [main]
+    paths: ["packages/jarvis/**", ".github/workflows/jarvis-build.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: jarvis-build
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            packages/jarvis
+            install-jarvis.sh
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      - name: Test
+        working-directory: packages/jarvis
+        run: bun test
+
+      - name: Build Linux executables
+        working-directory: packages/jarvis
+        run: |
+          mkdir -p dist
+          bun build --compile --minify --target=bun-linux-x64          src/main.ts --outfile dist/jarvis-linux-x64
+          bun build --compile --minify --target=bun-linux-x64-baseline src/main.ts --outfile dist/jarvis-linux-x64-baseline
+          bun build --compile --minify --target=bun-linux-arm64        src/main.ts --outfile dist/jarvis-linux-arm64
+          chmod +x dist/jarvis-*
+
+      - name: Smoke test the x64 binary
+        working-directory: packages/jarvis
+        run: |
+          ./dist/jarvis-linux-x64 --help | head -3
+          # Boot against a stub opencode server and check the UI and state API respond.
+          cat > /tmp/stub.ts <<'TS'
+          Bun.serve({ port: 4999, fetch(req) {
+            const u = new URL(req.url)
+            if (u.pathname === "/api/agent") return Response.json({ data: [] })
+            if (u.pathname === "/api/model") return Response.json({ data: [] })
+            if (u.pathname === "/api/event") return new Response(new ReadableStream({ start() {} }), { headers: { "content-type": "text/event-stream" } })
+            return new Response(null, { status: 204 })
+          } })
+          TS
+          bun /tmp/stub.ts & STUB=$!
+          sleep 1
+          ./dist/jarvis-linux-x64 --opencode-url http://127.0.0.1:4999 --port 4747 --data /tmp/jd --dir /tmp/jp & JV=$!
+          sleep 3
+          curl -fsS http://127.0.0.1:4747/ | grep -q "<title>Jarvis</title>"
+          curl -fsS http://127.0.0.1:4747/api/state | grep -q '"workers"'
+          kill $JV $STUB
+
+      - name: Checksums
+        working-directory: packages/jarvis/dist
+        run: sha256sum jarvis-linux-* | tee SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-linux
+          path: |
+            packages/jarvis/dist/jarvis-linux-*
+            packages/jarvis/dist/SHA256SUMS
+            install-jarvis.sh
+          if-no-files-found: error
+
+      - name: Publish release (stable download URL)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete jarvis-latest --yes --cleanup-tag || true
+          gh release create jarvis-latest --title "Jarvis (latest build)" \
+            --notes "Linux executables built from commit ${GITHUB_SHA}. Install: curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install-jarvis.sh | bash" \
+            packages/jarvis/dist/jarvis-linux-* packages/jarvis/dist/SHA256SUMS install-jarvis.sh

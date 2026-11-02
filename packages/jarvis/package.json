@@ -1,0 +1,14 @@
+{
+  "name": "@opencode/jarvis",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Jarvis: a human-like personal assistant that sits above opencode and controls it",
+  "scripts": {
+    "dev": "bun run src/main.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "bun build --compile --minify src/main.ts --outfile dist/jarvis",
+    "build:linux-x64": "bun build --compile --minify --target=bun-linux-x64 src/main.ts --outfile dist/jarvis-linux-x64"
+  }
+}

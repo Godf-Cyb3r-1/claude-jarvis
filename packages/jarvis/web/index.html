@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jarvis</title>
+<style>
+  :root { --bg:#07070a; --panel:#0e0e13; --line:#22222c; --text:#ecebe6; --dim:#8c8b86; --o:#ff7a1a; --g:#ffc463; --warn:#ffb020; --bad:#ff5a4d; --ok:#7bd88f; }
+  * { box-sizing: border-box; }
+  html,body { height:100%; margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  .app { height:100%; display:grid; grid-template-columns: minmax(0,1fr) 320px; gap:0; }
+  .main { display:flex; flex-direction:column; min-width:0; height:100%; }
+  .stage { position:relative; flex:0 0 46%; min-height:260px; }
+  canvas#orb { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  .status { position:absolute; left:16px; top:12px; font-size:12px; color:var(--dim); letter-spacing:.04em; }
+  .status b { color:var(--g); font-weight:600; }
+  .banner { position:absolute; left:50%; bottom:10px; transform:translateX(-50%); padding:6px 14px; border:1px solid var(--warn); color:var(--warn); border-radius:999px; font-size:12px; display:none; background:rgba(255,176,32,.08); }
+  .chat { flex:1; min-height:0; display:flex; flex-direction:column; border-top:1px solid var(--line); }
+  #log { flex:1; overflow-y:auto; padding:16px 20px; display:flex; flex-direction:column; gap:10px; }
+  .msg { max-width:min(680px,92%); padding:9px 13px; border-radius:14px; white-space:pre-wrap; word-wrap:anywhere; }
+  .msg.user { align-self:flex-end; background:#1b1b24; }
+  .msg.jarvis { align-self:flex-start; background:linear-gradient(180deg,rgba(255,122,26,.10),rgba(255,122,26,.04)); border:1px solid rgba(255,122,26,.22); }
+  .msg.proactive { border-style:dashed; }
+  .badge { display:inline-block; font-size:11px; padding:0 7px; margin-right:6px; border-radius:999px; background:rgba(255,196,99,.15); color:var(--g); vertical-align:1px; }
+  form { display:flex; gap:8px; padding:12px 16px 16px; }
+  textarea { flex:1; resize:none; height:46px; max-height:140px; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:11px 13px; font:inherit; outline:none; }
+  textarea:focus { border-color:var(--o); }
+  button { background:var(--o); color:#1a0d00; border:0; border-radius:12px; padding:0 18px; font:inherit; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--dim); border:1px solid var(--line); font-weight:400; padding:2px 10px; border-radius:999px; font-size:12px; }
+  aside { border-left:1px solid var(--line); background:var(--panel); overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:16px; }
+  h2 { margin:0 0 8px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); font-weight:600; }
+  .card { border:1px solid var(--line); border-radius:12px; padding:9px 11px; margin-bottom:8px; background:#0a0a0f; }
+  .card .t { font-weight:600; display:flex; justify-content:space-between; gap:8px; }
+  .card .s { font-size:12px; color:var(--dim); margin-top:3px; }
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px; background:var(--dim); }
+  .running,.starting { background:var(--o); } .done { background:var(--ok); } .failed { background:var(--bad); } .waiting { background:var(--warn); }
+  .empty { color:var(--dim); font-size:13px; }
+  .kw { font-size:11px; color:var(--g); margin-top:4px; }
+  @media (max-width: 820px) { .app { grid-template-columns:1fr; grid-template-rows:1fr auto; } aside { border-left:0; border-top:1px solid var(--line); max-height:34vh; } .stage { flex-basis:34%; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="main">
+    <div class="stage">
+      <canvas id="orb"></canvas>
+      <div class="status">JARVIS · <b id="orbState">idle</b> · <span id="brain"></span></div>
+      <div class="banner" id="banner">Waiting for your confirmation. Type it exactly as shown.</div>
+    </div>
+    <div class="chat">
+      <div id="log" aria-live="polite"></div>
+      <form id="form">
+        <textarea id="input" placeholder="Talk to Jarvis…" autofocus></textarea>
+        <button type="submit">Send</button>
+      </form>
+    </div>
+  </div>
+  <aside>
+    <section><h2>Workers <span id="wcount"></span></h2><div id="workers"></div></section>
+    <section><h2>Memory used</h2><div id="cards"></div></section>
+    <section><h2>About you</h2><div id="profile" class="empty"></div><div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"><button class="ghost" id="tagToggle" type="button">Tags: shown</button><button class="ghost" id="wipe" type="button">Wipe what Jarvis knows</button></div></section>
+  </aside>
+</div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let showTags = true;
+let state = { orb: "idle", workers: [], max: 4, confirm: null };
+let pulse = 0;
+
+// ---------- chat ----------
+const log = $("log");
+function renderText(el, text) {
+  el.textContent = "";
+  const parts = text.split(/(\[[a-z-]+\])/g);
+  for (const p of parts) {
+    const m = /^\[([a-z-]+)\]$/.exec(p);
+    if (m) { if (showTags) { const b = document.createElement("span"); b.className = "badge"; b.textContent = m[1]; el.appendChild(b); } }
+    else el.appendChild(document.createTextNode(p));
+  }
+}
+const messages = [];
+function addMessage(m) {
+  if (messages.some((x) => x.id === m.id)) return;
+  messages.push(m);
+  const el = document.createElement("div");
+  el.className = "msg " + m.role + (m.proactive ? " proactive" : "");
+  el.dataset.id = m.id; el.dataset.raw = m.text;
+  renderText(el, m.text);
+  log.appendChild(el); log.scrollTop = log.scrollHeight;
+}
+$("tagToggle").onclick = () => {
+  showTags = !showTags; $("tagToggle").textContent = "Tags: " + (showTags ? "shown" : "hidden");
+  for (const el of log.children) renderText(el, el.dataset.raw);
+};
+$("wipe").onclick = async () => { if (confirm("Erase everything Jarvis knows about you?")) { await fetch("/api/profile", { method: "DELETE" }); loadState(); } };
+$("form").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $("input").value.trim(); if (!text) return;
+  $("input").value = "";
+  await fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
+};
+$("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("form").requestSubmit(); } });
+
+// ---------- side panels ----------
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function renderState() {
+  $("orbState").textContent = state.orb;
+  $("banner").style.display = state.confirm ? "block" : "none";
+  if (state.brain) $("brain").textContent = state.brain.model + (state.brain.thinkingOff ? " · thinking off" : " · thinking not confirmed off");
+  $("wcount").textContent = `(${state.workers.filter((w) => ["starting","running","waiting"].includes(w.state)).length}/${state.max}` + (state.queued ? `, ${state.queued} queued` : "") + ")";
+  const box = $("workers"); box.textContent = "";
+  if (!state.workers.length) box.appendChild(el("div", "empty", "No workers. Ask Jarvis to start one."));
+  for (const w of state.workers) {
+    const c = el("div", "card"); const t = el("div", "t");
+    const l = el("span"); l.appendChild(el("span", "dot " + w.state)); l.appendChild(document.createTextNode(w.title)); t.appendChild(l); t.appendChild(el("span", "s", w.state));
+    c.appendChild(t); c.appendChild(el("div", "s", `${w.agent || "default agent"} · ${w.model || "default model"}`));
+    if (w.waitingFor && w.waitingFor.length) c.appendChild(el("div", "s", "needs you: " + w.waitingFor.map((x) => x.what).join("; ")));
+    else if (w.summary) c.appendChild(el("div", "s", w.summary.slice(-110)));
+    box.appendChild(c);
+  }
+}
+async function loadState() {
+  const r = await (await fetch("/api/state")).json();
+  state = Object.assign(state, r.state); r.history.forEach(addMessage); renderState();
+  const cards = $("cards"); cards.textContent = "";
+  if (!r.cards.length) cards.appendChild(el("div", "empty", "No sessions remembered yet."));
+  for (const k of r.cards.slice(0, 6)) { const c = el("div", "card"); c.appendChild(el("div", "t", k.title || k.session_id)); c.appendChild(el("div", "s", k.outcome || k.goal)); c.appendChild(el("div", "kw", k.keywords.slice(0, 6).join(" · "))); cards.appendChild(c); }
+  const p = $("profile"); const prof = Object.entries(r.profile).map(([k, v]) => `${k}: ${v}`).concat(r.notes.slice(0, 8));
+  p.textContent = prof.length ? prof.join("\n") : "Jarvis hasn't learned anything about you yet."; p.style.whiteSpace = "pre-wrap";
+}
+function connect() {
+  const es = new EventSource("/api/events");
+  es.onmessage = (ev) => {
+    const e = JSON.parse(ev.data);
+    if (e.type === "message") { addMessage(e.message); loadState(); }
+    else if (e.type === "state") { state = Object.assign(state, e.state); renderState(); }
+    else if (e.type === "pulse") { pulse = 1; }
+  };
+  es.onerror = () => { es.close(); setTimeout(connect, 1500); };
+}
+loadState().then(connect);
+
+// ---------- the orb ----------
+const canvas = $("orb");
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const gl = canvas.getContext("webgl", { antialias: true, alpha: true, premultipliedAlpha: false });
+const N_MAIN = 16000, N_SAT = 420, N_HAZE = 5000, TOTAL = N_MAIN + 4 * N_SAT + N_HAZE;
+let energy = 0.15, targetEnergy = 0.15, t0 = performance.now();
+const tint = { r: 1, g: 0.5, b: 0.1 };
+
+function resize() { const d = Math.min(devicePixelRatio || 1, 2); const w = canvas.clientWidth, h = canvas.clientHeight; if (canvas.width !== w * d || canvas.height !== h * d) { canvas.width = w * d; canvas.height = h * d; } return d; }
+
+function stateTargets() {
+  const s = state.orb;
+  return s === "thinking" ? 0.85 : s === "replying" ? 0.55 : s === "confirm" ? 0.35 : 0.15;
+}
+
+if (gl) {
+  const vs = `attribute vec4 a;
+  uniform float t, R, spread, tilt, speed, size, energy, aspect, dpr, mode, pulse;
+  varying float v, glow;
+  void main() {
+    float ang = a.x * 6.28318 + t * speed * (0.12 + 0.5 * a.y);
+    float r = R + (a.z - 0.5) * spread * (1.0 + 1.4 * energy) + 0.012 * sin(t * 1.7 + a.x * 40.0);
+    if (mode > 0.5) { r = R * pow(a.z, 0.7); }
+    r += pulse * 0.05 * sin(t * 9.0 - a.x * 6.0);
+    vec3 p = vec3(cos(ang) * r, sin(ang) * r, (a.w - 0.5) * spread * 0.9);
+    float ct = cos(tilt), st = sin(tilt);
+    p = vec3(p.x, p.y * ct - p.z * st, p.y * st + p.z * ct);
+    float cz = cos(t * 0.05), sz = sin(t * 0.05);
+    p = vec3(p.x * cz - p.y * sz, p.x * sz + p.y * cz, p.z);
+    float persp = 1.0 / (1.6 - p.z);
+    gl_Position = vec4(p.x * persp / aspect, p.y * persp, 0.0, 1.0);
+    gl_PointSize = (1.0 + a.w * 3.0 + energy * 1.4) * size * dpr * persp * 1.6;
+    v = 0.45 + 0.55 * a.w; glow = mode;
+  }`;
+  const fs = `precision mediump float; varying float v, glow; uniform vec3 tint; uniform float alpha;
+  void main() {
+    vec2 c = gl_PointCoord - 0.5; float d = length(c); if (d > 0.5) discard;
+    float k = smoothstep(0.5, 0.0, d);
+    vec3 col = mix(tint, vec3(1.0, 0.66, 0.22), v * v * 0.5);
+    gl_FragColor = vec4(col * (0.55 + 0.7 * k), k * alpha * (glow > 0.5 ? 0.30 : 0.9));
+  }`;
+  const core_vs = `attribute vec2 p; varying vec2 uv; void main(){ uv = p; gl_Position = vec4(p,0.0,1.0); }`;
+  const core_fs = `precision mediump float; varying vec2 uv; uniform float aspect, energy, t; uniform vec3 tint;
+  void main(){ vec2 q = vec2(uv.x * aspect, uv.y); float r = length(q);
+    float g = exp(-r * r * (5.0 - 2.0 * energy)) * (0.55 + 0.45 * energy + 0.08 * sin(t * 2.0));
+    float ring = exp(-pow((r - 0.78) * 8.0, 2.0)) * 0.10;
+    vec3 c = tint * g + vec3(1.0, 0.85, 0.5) * exp(-r * r * 60.0) * (0.6 + energy) + tint * ring;
+    gl_FragColor = vec4(c, clamp(g + ring, 0.0, 0.95)); }`;
+  const mk = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  const prog = (v, f) => { const p = gl.createProgram(); gl.attachShader(p, mk(gl.VERTEX_SHADER, v)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, f)); gl.linkProgram(p); return p; };
+  const P = prog(vs, fs), C = prog(core_vs, core_fs);
+  const data = new Float32Array(TOTAL * 4); for (let i = 0; i < data.length; i++) data[i] = Math.random();
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const U = (p, n) => gl.getUniformLocation(p, n);
+  const satTint = [[1, 0.55, 0.15], [1, 0.75, 0.3], [0.95, 0.4, 0.1], [1, 0.85, 0.5]];
+  function frame(now) {
+    const t = (now - t0) / 1000, d = resize();
+    targetEnergy = stateTargets() + (state.orb === "replying" ? 0.12 * Math.sin(t * 7) : 0) + (state.orb === "confirm" ? 0.1 * Math.sin(t * 2.2) : 0);
+    energy += (targetEnergy - energy) * 0.06; pulse *= 0.94;
+    gl.viewport(0, 0, canvas.width, canvas.height); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    const aspect = canvas.width / canvas.height, e = energy + pulse * 0.4, sp = reduce ? 0.3 : 1;
+    const warm = state.confirm ? [1, 0.7, 0.15] : [tint.r, tint.g, tint.b];
+    gl.useProgram(C); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    const pl = gl.getAttribLocation(C, "p"); gl.enableVertexAttribArray(pl); gl.vertexAttribPointer(pl, 2, gl.FLOAT, false, 0, 0);
+    gl.uniform1f(U(C, "aspect"), aspect); gl.uniform1f(U(C, "energy"), e); gl.uniform1f(U(C, "t"), t); gl.uniform3fv(U(C, "tint"), warm);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.useProgram(P); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    const al = gl.getAttribLocation(P, "a"); gl.enableVertexAttribArray(al); gl.vertexAttribPointer(al, 4, gl.FLOAT, false, 0, 0);
+    const set = (R, spread, tilt, speed, size, alpha, mode, col) => {
+      gl.uniform1f(U(P, "t"), t); gl.uniform1f(U(P, "R"), R); gl.uniform1f(U(P, "spread"), spread); gl.uniform1f(U(P, "tilt"), tilt);
+      gl.uniform1f(U(P, "speed"), speed * sp); gl.uniform1f(U(P, "size"), size); gl.uniform1f(U(P, "alpha"), alpha); gl.uniform1f(U(P, "mode"), mode);
+      gl.uniform1f(U(P, "energy"), e); gl.uniform1f(U(P, "aspect"), aspect); gl.uniform1f(U(P, "dpr"), d); gl.uniform1f(U(P, "pulse"), pulse); gl.uniform3fv(U(P, "tint"), col);
+    };
+    const tight = state.orb === "thinking" ? 0.9 : 1;
+    set(0.78 * tight, 0.16, 0.62, 1.0 + (state.orb === "thinking" ? 2.2 : 0), 1.0, 0.95, 0, warm); gl.drawArrays(gl.POINTS, 0, N_MAIN);
+    set(0.50, 0, 0.0, 0.6, 1.0, 0.9, 1, warm); gl.drawArrays(gl.POINTS, N_MAIN + 4 * N_SAT, N_HAZE);
+    state.workers.filter((w) => ["starting","running","waiting","done"].includes(w.state)).slice(0, 4).forEach((w, i) => {
+      const waiting = w.state === "waiting" && Math.sin(t * 8) > 0, dim = w.state === "done" ? 0.35 : 1;
+      set(1.00 + 0.07 * i, 0.03, 0.35 + 0.5 * i, 1.4 + 0.3 * i, 0.8, 0.9 * dim, 0, waiting ? [1, 0.75, 0.1] : satTint[i]);
+      gl.drawArrays(gl.POINTS, N_MAIN + i * N_SAT, N_SAT);
+    });
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+} else {
+  const c2 = canvas.getContext("2d");
+  (function f(now) { const t = (now - t0) / 1000, d = devicePixelRatio || 1; canvas.width = canvas.clientWidth * d; canvas.height = canvas.clientHeight * d;
+    c2.translate(canvas.width / 2, canvas.height / 2); const R = Math.min(canvas.width, canvas.height) * 0.3;
+    energy += (stateTargets() - energy) * 0.06;
+    for (let i = 0; i < 700; i++) { const a = (i / 700) * 6.283 + t * 0.2; c2.fillStyle = `rgba(255,${130 + (i % 90)},40,${0.4 + energy * 0.5})`; c2.fillRect(Math.cos(a) * R * (1 + 0.04 * Math.sin(i + t * 2)), Math.sin(a) * R * 0.8, 2 * d, 2 * d); }
+    requestAnimationFrame(f); })(performance.now());
+}
+</script>
+</body>
+</html>
